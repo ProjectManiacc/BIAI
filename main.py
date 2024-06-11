@@ -1,5 +1,7 @@
 import os
 import random
+from pathlib import Path
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -14,6 +16,7 @@ from torchvision import transforms
 from PIL import Image
 from pprint import pprint
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 
 
 class PetModel(pl.LightningModule):
@@ -33,6 +36,8 @@ class PetModel(pl.LightningModule):
 
     def forward(self, image):
         # normalize image here
+        image = image[:, :3, :, :]
+
         image = (image - self.mean) / self.std
         mask = self.model(image)
         return mask
@@ -148,22 +153,27 @@ class MyDataset(Dataset):
         self.img_filenames = os.listdir(img_dir)
         self.mask_filenames = os.listdir(mask_dir)
         self.decision = decision
+        self.resize = transforms.Resize((320,320))
+
 
     def __len__(self):
         return len(self.img_filenames)
 
     def __getitem__(self, idx):
+        idx = idx % len(self.mask_filenames)
         img_path = os.path.join(self.img_dir, self.img_filenames[idx])
         mask_path = os.path.join(self.mask_dir, self.mask_filenames[idx])
 
         # Load image and mask
         img = Image.open(img_path).convert('RGB')
         mask = Image.open(mask_path).convert('RGB')
+        img = self.resize(img)
+        mask = self.resize(mask)
         # Split mask into individual channels
         if self.decision:
             width, height = img.size
             # Set the fragment size
-            fragment_size = 320
+            fragment_size = 160
             # Calculate the maximum starting position for the fragment
             max_start_x = width - fragment_size
             max_start_y = height - fragment_size
@@ -197,11 +207,12 @@ class MyDataset(Dataset):
 
 def ShowResults(model=None, load_model=None, decision=None):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model_path = Path(r"./best_model_Normal.pth")
     if load_model:
-        if decision == 'Augmentation':
+        if decision == 'a':
             main_model = torch.load('./best_model_Augmentation.pth')
         else:
-            main_model = torch.load('./best_model.pth')
+            main_model = torch.load(model_path)
     else:
         main_model = model
 
@@ -216,8 +227,8 @@ def ShowResults(model=None, load_model=None, decision=None):
         mask = np.array(mask)
         mask = mask / 255.0
         mask = np.array(Image.fromarray(mask.astype('uint8'), 'RGB'))
-        if decision == 'Augmentation':
-            mask_tensor = torch.zeros((320, 320, 4))
+        if decision == 'a':
+            mask_tensor = torch.zeros((480, 480, 4))
         else:
             mask_tensor = torch.zeros((480, 480, 4))
         mask_tensor[:, :, 0] = torch.as_tensor(mask[:, :, 0])
@@ -231,11 +242,12 @@ def ShowResults(model=None, load_model=None, decision=None):
 
     with torch.no_grad():
         main_model.eval()
-        if load_model:
-            output = main_model(masks_batch)
-        else:
-            output = main_model.get_predicted_masks()[:210]
+        # if load_model:
+        #     output = main_model(masks_batch)
+        # else:
+        output = main_model.get_predicted_masks()[:224]
 
+    output = F.interpolate(output.float(), size=(480, 480), mode='bilinear', align_corners=False)
     # Compute evaluation metrics
     tp, fp, fn, tn = smp.metrics.get_stats(output, masks_batch, mode='multilabel', threshold=0.5)
     iou_score = smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro")
@@ -266,13 +278,13 @@ def main():
         showdata = input('Show results after? (Y): ')
         if showdata == 'y':
             decision2 = input('Normal or Augmentation : ')
-        if decision == 'Normal':
+        if decision == 'n':
             img_dataset = MyDataset("DataBaseImages", "DataBaseMasks", transform=None)
             mask_dataset = MyDataset("DataBaseImages", "DataBaseMasks", transform=None)
-        if decision == 'Augmentation':
+        if decision == 'a':
             img_dataset = MyDataset("Images", "Masks", transform=None, decision=True)
             mask_dataset = MyDataset("Images", "Masks", transform=None, decision=True)
-        if decision != 'Normal' and decision != 'Augmentation':
+        if decision != 'n' and decision != 'a':
             exit(2)
         n_cpu = 1
         train_dataloader = DataLoader(img_dataset, batch_size=1, shuffle=True, num_workers=n_cpu)
@@ -295,12 +307,12 @@ def main():
         # # run validation dataset
         valid_metrics = trainer.validate(model, dataloaders=valid_dataloader, verbose=False)
         pprint(valid_metrics)
-        if decision == 'Augmentation':
+        if decision == 'a':
             torch.save(model, './best_model_Augmentation.pth')
-        if decision == 'Normal':
+        if decision == 'n':
             torch.save(model, './best_model_Normal.pth')
         if showdata == 'y':
-            ShowResults(model, False, decision2)
+            ShowResults(model, True, decision2)
 
 
 if __name__ == "__main__":
