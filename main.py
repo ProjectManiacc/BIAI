@@ -17,22 +17,36 @@ from PIL import Image
 from pprint import pprint
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
-
+import torchvision.models as models
+from torch.nn import BCEWithLogitsLoss
+from torchvision.transforms import RandomResizedCrop
+from torchvision.transforms import RandomErasing
 
 class PetModel(pl.LightningModule):
 
     def __init__(self, arch, encoder_name, in_channels, **kwargs):
         super().__init__()
-        self.model = smp.create_model(
-            arch, encoder_name=encoder_name, in_channels=in_channels, classes=4, **kwargs
-        )
+        self.model = models.segmentation.deeplabv3_resnet101(pretrained=True)
+        self.model.classifier[4] = torch.nn.Conv2d(
+            256, 4, kernel_size=(1, 1), stride=(1, 1))
+
         # preprocessing parameteres for image
-        params = smp.encoders.get_preprocessing_params(encoder_name)
+        params = smp.encoders.get_preprocessing_params('resnet101')
+        # preprocessing parameteres for image
+        # params = smp.encoders.get_preprocessing_params(encoder_name)
         self.register_buffer("std", torch.tensor(params["std"]).view(1, 3, 1, 1))
         self.register_buffer("mean", torch.tensor(params["mean"]).view(1, 3, 1, 1))
         # for image segmentation dice loss could be the best first choice
         self.predicted_masks = []
-        self.loss_fn = smp.losses.DiceLoss(smp.losses.MULTILABEL_MODE, from_logits=True)
+        self.loss_fn = self.loss_fn = BCEWithLogitsLoss()
+
+
+
+    def configure_optimizers(self):
+        # Use a learning rate schedule
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.0001)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+        return [optimizer], [scheduler]
 
     def forward(self, image):
         # normalize image here
@@ -66,7 +80,7 @@ class PetModel(pl.LightningModule):
         # Check that mask values in between 0 and 1
         assert mask.max() <= 1.0 and mask.min() >= 0
 
-        logits_mask = self.forward(image)
+        logits_mask = self.forward(image)["out"]
 
         # Predicted mask contains logits, and loss_fn param `from_logits` is set to True
         loss = self.loss_fn(logits_mask, mask)
@@ -153,8 +167,15 @@ class MyDataset(Dataset):
         self.img_filenames = os.listdir(img_dir)
         self.mask_filenames = os.listdir(mask_dir)
         self.decision = decision
-        self.resize = transforms.Resize((320,320))
-
+        self.resize = RandomResizedCrop(320, scale=(0.8, 1.0))
+        self.augment = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.RandomRotation(20),
+            # Add MixUp and CutOut
+            # transforms.RandomApply([transforms.Lambda(lambda x: x * torch.rand_like(x))], p=0.5),
+            # transforms.RandomApply([RandomErasing()], p=0.5),
+        ])
 
     def __len__(self):
         return len(self.img_filenames)
@@ -171,6 +192,8 @@ class MyDataset(Dataset):
         mask = self.resize(mask)
         # Split mask into individual channels
         if self.decision:
+            img = self.augment(img)
+            mask = self.augment(mask)
             width, height = img.size
             # Set the fragment size
             fragment_size = 160
@@ -287,11 +310,11 @@ def main():
         if decision != 'n' and decision != 'a':
             exit(2)
         n_cpu = 1
-        train_dataloader = DataLoader(img_dataset, batch_size=1, shuffle=True, num_workers=n_cpu)
-        valid_dataloader = DataLoader(mask_dataset, batch_size=1, shuffle=False, num_workers=n_cpu)
+        train_dataloader = DataLoader(img_dataset, batch_size=2, shuffle=True, num_workers=n_cpu)
+        valid_dataloader = DataLoader(mask_dataset, batch_size=2, shuffle=False, num_workers=n_cpu)
         # test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=n_cpu)
 
-    model = PetModel("FPN", "resnet34", in_channels=3)
+    model = PetModel("Unet", "resnet50", in_channels=3)
     if teach_model == 'n':
         ShowResults(model, True, decision2)
     else:
