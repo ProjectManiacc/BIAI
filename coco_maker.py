@@ -4,9 +4,11 @@ import pathlib
 import json
 import cv2
 import numpy as np
+from pathlib import Path
 
-input_dir = "./zdjecia"
-output_dir = "./wynik"
+images_dir = r".\DataBaseImages"
+coco_dir = r".\DataBaseCoco"
+output_dir = r".\DataBaseMasks"
 
 CATEGORY_COLORS = {
     1: (0, 0, 255),     # NonMaskingBackground
@@ -20,11 +22,10 @@ written_paths = {}
 
 def get_coco_paths():
     coco_paths = []
-    for path in os.listdir(input_dir):
-        full_path = os.path.join(input_dir, path)
+    for path in os.listdir(coco_dir):
+        full_path = os.path.join(coco_dir, path)
         if os.path.isfile(full_path) and pathlib.Path(full_path).suffix == ".json":
-            if "coco" in full_path.lower():
-                coco_paths.append(full_path)
+            coco_paths.append(full_path)
 
     print(f"Found {len(coco_paths)} COCO files...")
     return coco_paths
@@ -34,6 +35,7 @@ def load_cocos(coco_paths):
     cocos = []
     for coco_path in coco_paths:
         with open(coco_path, "r") as f:
+            # print(f"Loading {coco_path}...")
             coco = json.load(f)
             coco["path"] = coco_path
             cocos.append(coco)
@@ -51,7 +53,7 @@ def process_cocos(cocos):
             valid_coco = True
             for image_info in coco['images']:
                 total_images = total_images + 1
-                image_path = os.path.join(input_dir, image_info['file_name'])
+                image_path = os.path.join(images_dir, image_info['file_name'])
                 image = None
                 try:
                     image = cv2.imdecode(np.fromfile(
@@ -81,7 +83,7 @@ def to_points(l):
 
 
 def process_coco_img(coco, image_info, image):
-    output_path = os.path.join(output_dir, image_info['file_name'] + ".png")
+    output_path = os.path.join(output_dir, Path(image_info['file_name']).stem + ".png")
     mask_data = np.zeros((image.shape[0],image.shape[1],3), dtype=np.uint8)
 
     valid_segments = 0
